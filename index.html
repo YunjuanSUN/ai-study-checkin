@@ -285,6 +285,9 @@ textarea:focus{outline:2px solid var(--rose-2);outline-offset:-1px;border-color:
 #shareView .btnrow{margin-top:16px}
 #shareView .btnrow .btn{flex:1;text-decoration:none}
 #shareView .tiny{text-align:center;margin-top:10px}
+.seg{display:flex;gap:4px;padding:4px;margin-bottom:14px;border-radius:999px;background:var(--card-2);border:1px solid var(--line)}
+.seg button{flex:1;height:36px;border-radius:999px;font-size:13.5px;font-weight:600;color:var(--ink-2)}
+.seg button.on{background:var(--card);color:var(--rose);box-shadow:0 2px 8px -4px rgba(36,42,66,.4)}
 
 /* ---------- 问题本 ---------- */
 .qbook{background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);padding:6px 0 16px;box-shadow:var(--shadow)}
@@ -965,7 +968,7 @@ async function drawCard(n,i){
   const maxY=H-170;
   for(const [k,t] of items.slice(0,4).entries()){
     g.font='400 34px '+SERIF;
-    const ls=wrapText(g,t,RW-56,2); if(y+(ls.length-1)*50>maxY) break;
+    const ls=wrapText(g,t,RW-56,qs.length?2:1); if(y+(ls.length-1)*50>maxY) break;
     g.fillStyle='#8EA6DA';g.font='400 34px '+NUM;g.fillText(String(k+1),L,y);
     g.fillStyle='#1F2538';g.font='400 34px '+SERIF;ls.forEach(l=>{g.fillText(l,L+56,y);y+=50;});y+=18;
   }
@@ -979,15 +982,76 @@ async function drawCard(n,i){
   g.textAlign='right';g.fillStyle='#34478A';g.font='600 26px '+SERIF;g.fillText('AI 学习手账',W-L,H-96);g.textAlign='left';
   return c;
 }
-async function shareCard(n,i){
+const POSTER_ART=8;
+async function drawPoster(n,i){
+  const p=P(n), x=sessOf(n)[i], N=i+1;
+  const qs=qList(n).filter(q=>q.at>=x.s&&q.at<=x.e+60000);
+  const cum=sessOf(n).slice(0,i+1).reduce((a,y)=>a+y.d,0);
+  const W=1080,H=1620,c=document.createElement('canvas');c.width=W;c.height=H;
+  const g=c.getContext('2d');
+  const SERIF='"Songti SC","STSong","Noto Serif SC","Noto Serif CJK SC",serif', SANS='-apple-system,"PingFang SC","Noto Sans SC",sans-serif', NUM='"Iowan Old Style",Palatino,"Noto Serif",Georgia,serif';
+  g.fillStyle='#2A3352';g.fillRect(0,0,W,H);
+  try{
+    const im=await loadImg('assets/poster'+((n*5+i)%POSTER_ART+1)+'.jpg');
+    const sc=Math.max(W/im.width,H/im.height), iw=im.width*sc, ih=im.height*sc;
+    g.drawImage(im,(W-iw)/2,(H-ih)/2,iw,ih);
+  }catch(e){}
+  // 顶部与底部压暗，保证白字可读
+  let gr=g.createLinearGradient(0,0,0,240);gr.addColorStop(0,'rgba(16,20,38,.5)');gr.addColorStop(1,'rgba(16,20,38,0)');g.fillStyle=gr;g.fillRect(0,0,W,240);
+  gr=g.createLinearGradient(0,H*0.38,0,H);gr.addColorStop(0,'rgba(18,24,48,0)');gr.addColorStop(.45,'rgba(18,24,48,.62)');gr.addColorStop(1,'rgba(14,18,36,.92)');g.fillStyle=gr;g.fillRect(0,0,W,H);
+
+  const L=84, RW=W-L*2;
+  g.textBaseline='alphabetic';
+  g.shadowColor='rgba(0,0,0,.35)';g.shadowBlur=14;
+  // 顶部：品牌与日期
+  const dt=new Date(x.s),de=new Date(x.e);
+  g.fillStyle='rgba(255,255,255,.92)';g.font='600 30px '+SERIF;g.fillText('AI 学习手账',L,104);
+  g.textAlign='right';g.font='400 30px '+NUM;g.fillText(dt.getFullYear()+'.'+pad(dt.getMonth()+1)+'.'+pad(dt.getDate()),W-L,104);g.textAlign='left';
+
+  // 底部内容从下往上排：先量高度
+  g.font='400 34px '+SERIF;
+  const items=(qs.length?qs.map(q=>q.t):(p.must||[]).map(m=>m.label)).slice(0,2);
+  const itemLines=items.map(t=>wrapText(g,t,RW-50,qs.length?2:1));
+  g.font='600 46px '+SERIF;
+  const tLines=wrapText(g,(p.mod===4?'':'Part '+p.n+'  ')+p.title,RW,2);
+  const hItems=items.length?(50+itemLines.reduce((a,l)=>a+l.length*48+14,0)):0;
+  const total=34+108+tLines.length*62+40+150+40+hItems+70;
+  let y=H-total-20;
+
+  g.fillStyle='rgba(255,255,255,.78)';g.font='600 26px '+SANS;g.fillText('模块'+CN[p.mod]+'  ·  '+MODS[p.mod],L,y);y+=34;
+  y+=96;g.fillStyle='#fff';g.font='400 96px '+SERIF;g.fillText('第 '+N+' 次学习',L,y);y+=12;
+  y+=56;g.font='600 46px '+SERIF;tLines.forEach(l=>{g.fillText(l,L,y);y+=62;});y-=62;
+  y+=40;
+  const col=RW/3, cumV=cum>=3600?(Math.round(cum/360)/10):Math.round(cum/60);
+  [[Math.round(x.d/60),'分钟 · 本次'],[cumV,(cum>=3600?'小时':'分钟')+' · 这一关累计'],[streak(),'天 · 连续打卡']].forEach((st,k)=>{
+    const sx=L+col*k;g.fillStyle=k===0?'#F6C9CE':'#fff';g.font='400 92px '+NUM;g.fillText(String(st[0]),sx,y+96);
+    g.fillStyle='rgba(255,255,255,.72)';g.font='400 25px '+SANS;g.fillText(st[1],sx,y+136);});
+  y+=150+40;
+  if(items.length){
+    g.shadowBlur=0;g.strokeStyle='rgba(255,255,255,.28)';g.lineWidth=2;g.beginPath();g.moveTo(L,y-34);g.lineTo(W-L,y-34);g.stroke();g.shadowBlur=14;
+    g.fillStyle='rgba(255,255,255,.72)';g.font='600 26px '+SANS;g.fillText(qs.length?'这次记下的问题':'这次读的材料',L,y);y+=50;
+    itemLines.forEach((ls,k)=>{g.fillStyle='#C9D6F2';g.font='400 34px '+NUM;g.fillText(String(k+1),L,y);
+      g.fillStyle='#fff';g.font='400 34px '+SERIF;ls.forEach(l=>{g.fillText(l,L+50,y);y+=48;});y+=14;});
+  }
+  g.fillStyle='rgba(255,255,255,.6)';g.font='400 24px '+SANS;
+  g.fillText(pad(dt.getHours())+':'+pad(dt.getMinutes())+' – '+pad(de.getHours())+':'+pad(de.getMinutes())+'  ·  这一关第 '+N+' 次',L,H-64);
+  g.shadowBlur=0;
+  return c;
+}
+
+async function shareCard(n,i,style){
   const v=$('shareView'), p=P(n);
-  v.innerHTML='<div class="sv-in"><div class="sv-top"><b>第 '+(i+1)+' 次学习 · '+esc(pLabel(p))+'</b><button class="sv-x" id="svX" aria-label="关闭">'+I('x','sm')+'</button></div><div class="sv-load" id="svImg">正在生成卡片…</div><div id="svAct"></div></div>';
+  style=style||S.cardStyle||'poster';
+  v.innerHTML='<div class="sv-in"><div class="sv-top"><b>第 '+(i+1)+' 次学习 · '+esc(pLabel(p))+'</b><button class="sv-x" id="svX" aria-label="关闭">'+I('x','sm')+'</button></div>'+
+    '<div class="seg" role="tablist"><button data-st="poster" class="'+(style==='poster'?'on':'')+'" role="tab" aria-selected="'+(style==='poster')+'">油画海报</button><button data-st="card" class="'+(style==='card'?'on':'')+'" role="tab" aria-selected="'+(style==='card')+'">图文卡片</button></div>'+
+    '<div class="sv-load" id="svImg">正在生成卡片…</div><div id="svAct"></div></div>';
   v.classList.add('on'); $('svX').onclick=()=>v.classList.remove('on');
-  let c; try{c=await drawCard(n,i);}catch(e){$('svImg').textContent='生成失败，请重试';return;}
-  const url=c.toDataURL('image/png'), name='学习卡片-'+pLabel(p)+'-第'+(i+1)+'次.png';
+  v.querySelectorAll('[data-st]').forEach(b=>{b.onclick=()=>{S.cardStyle=b.dataset.st;save();shareCard(n,i,b.dataset.st);};});
+  let c; try{c=await (style==='poster'?drawPoster:drawCard)(n,i);}catch(e){$('svImg').textContent='生成失败，请重试';return;}
+  const url=c.toDataURL('image/jpeg',.9), name='学习卡片-'+pLabel(p)+'-第'+(i+1)+'次.jpg';
   $('svImg').outerHTML='<img id="svImg" src="'+url+'" alt="第 '+(i+1)+' 次学习的分享卡片">';
-  const blob=await new Promise(r=>c.toBlob(r,'image/png'));
-  const file=blob&&typeof File==='function'?new File([blob],name,{type:'image/png'}):null;
+  const blob=await new Promise(r=>c.toBlob(r,'image/jpeg',.9));
+  const file=blob&&typeof File==='function'?new File([blob],name,{type:'image/jpeg'}):null;
   let canShare=false; try{canShare=!!(file&&navigator.canShare&&navigator.canShare({files:[file]}));}catch(e){}
   $('svAct').innerHTML='<div class="btnrow">'+(canShare?'<button class="btn pri" id="svShare">'+I('ext','sm')+'分享</button>':'')+
     '<a class="btn'+(canShare?'':' pri')+'" id="svSave" href="'+url+'" download="'+esc(name)+'">'+I('copy','sm')+'保存图片</a></div>'+
