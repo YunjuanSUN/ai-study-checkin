@@ -289,6 +289,17 @@ textarea:focus{outline:2px solid var(--rose-2);outline-offset:-1px;border-color:
 .seg button{flex:1;height:36px;border-radius:999px;font-size:13.5px;font-weight:600;color:var(--ink-2)}
 .seg button.on{background:var(--card);color:var(--rose);box-shadow:0 2px 8px -4px rgba(36,42,66,.4)}
 
+/* ---------- 云同步 ---------- */
+.sy-row{display:flex;align-items:center;gap:12px}
+.sy-dot{width:10px;height:10px;border-radius:50%;background:var(--sage);flex:none;box-shadow:0 0 0 4px rgba(79,114,89,.15)}
+.sy-dot.busy{background:var(--hyd);box-shadow:0 0 0 4px rgba(142,166,218,.25);animation:blink 1.2s ease-in-out infinite}
+.sy-dot.bad{background:var(--tulip);box-shadow:0 0 0 4px rgba(174,88,98,.15)}
+.sy-t{min-width:0;display:flex;flex-direction:column;gap:2px}
+.sy-t b{font-size:14px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sy-t span{font-size:12.5px;color:var(--ink-2)}
+.sy-err{margin:0 0 12px;font-size:12.5px;color:var(--tulip)}
+.sy-del{display:block;margin:14px auto 0;font-size:12.5px;color:var(--ink-3);text-decoration:underline;text-underline-offset:3px}
+
 /* ---------- 问题本 ---------- */
 .qbook{background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);padding:6px 0 16px;box-shadow:var(--shadow)}
 .qempty{padding:14px 18px 4px;font-size:13.5px;color:var(--ink-2);line-height:1.7}
@@ -448,9 +459,182 @@ const CN=['','一','二','三','四'];
 let S={st:{},notes:{},started:{},days:[],vidDone:{},ext:{},qs:{},qa:{},ss:{},run:null};
 try{const r=localStorage.getItem(LS); if(r) S=Object.assign(S,JSON.parse(r));}catch(e){}
 delete S.timer;   // 旧版倒计时已取消
-function save(){try{localStorage.setItem(LS,JSON.stringify(S));}catch(e){}}
+function save(){stamp();try{localStorage.setItem(LS,JSON.stringify(S));}catch(e){} syncSoon();}
 const today=()=>new Date().toLocaleDateString('sv');   // YYYY-MM-DD 本地时区
 function touch(){const d=today(); if(!S.days.includes(d)){S.days.push(d); S.days.sort();} save();}
+
+/* ============================ 云同步 ============================
+   每一条进度（关卡状态、笔记、每次学习、每个问题、每份答案、打卡日）都是一个「条目」，
+   各自记着最后修改时间。两台设备合并时，每个条目取较新的一方；删除也会记下时间，
+   所以在一台设备上删掉的问题、取消的过关，不会被另一台设备「复活」。 */
+const FB={apiKey:'AIzaSyBJZdJDUDZnS2AOy2TEz1iBGFoxHQzsVvU',authDomain:'ai-study-838ca.firebaseapp.com',projectId:'ai-study-838ca',appId:'1:419201156298:web:82da4de5f6e9e8f96da033'};
+const FB_SDK='https://www.gstatic.com/firebasejs/10.12.2/';
+const SYNC_LS='aiplan-sync';
+const SMAPS=['st','notes','started','doneAt','vidDone','ext'], SLISTS={ss:'s',qs:'id',qa:'id'}, SLOCAL=['run','_t'];
+const J=v=>JSON.stringify(v);
+
+function flatten(o){
+  const f={};
+  SMAPS.forEach(m=>{const x=o[m]||{};Object.keys(x).forEach(k=>{if(x[k]!==undefined&&x[k]!==null)f[m+'|'+k]=J(x[k]);});});
+  (o.days||[]).forEach(d=>{f['days|'+d]='1';});
+  Object.keys(SLISTS).forEach(L=>{const x=o[L]||{},key=SLISTS[L];
+    Object.keys(x).forEach(n=>(x[n]||[]).forEach(it=>{if(it&&it[key]!=null)f[L+'|'+n+'|'+it[key]]=J(it);}));});
+  Object.keys(o).forEach(k=>{if(SMAPS.includes(k)||k in SLISTS||k==='days'||SLOCAL.includes(k))return;
+    if(o[k]!==undefined&&o[k]!==null)f['x|'+k]=J(o[k]);});
+  return f;
+}
+function unflatten(f){
+  const o={st:{},notes:{},started:{},days:[],vidDone:{},ext:{},doneAt:{},qs:{},qa:{},ss:{}};
+  Object.keys(f).sort().forEach(k=>{
+    const a=k.split('|'),v=f[k];
+    if(a[0]==='days') o.days.push(a[1]);
+    else if(SMAPS.includes(a[0])) o[a[0]][a[1]]=JSON.parse(v);
+    else if(a[0] in SLISTS){(o[a[0]][a[1]]=o[a[0]][a[1]]||[]).push(JSON.parse(v));}
+    else if(a[0]==='x') o[a.slice(1).join('|')]=JSON.parse(v);
+  });
+  Object.keys(SLISTS).forEach(L=>{const key=SLISTS[L];Object.values(o[L]).forEach(l=>l.sort((x,y)=>x[key]-y[key]));});
+  o.days.sort();
+  return o;
+}
+// 两份 {f:条目, t:修改时间} 合并：每个条目取时间较新的一方；时间相同（旧数据都没有时间）时取并集，关卡状态取较高的
+function mergeDocs(A,B){
+  const f={},t={},keys=new Set([...Object.keys(A.f),...Object.keys(B.f),...Object.keys(A.t),...Object.keys(B.t)]);
+  keys.forEach(k=>{
+    const ta=A.t[k]||0,tb=B.t[k]||0,ha=k in A.f,hb=k in B.f;let v;
+    if(ta>tb) v=ha?A.f[k]:undefined;
+    else if(tb>ta) v=hb?B.f[k]:undefined;
+    else if(ha&&hb) v=(k.startsWith('st|')&&+B.f[k]>+A.f[k])?B.f[k]:A.f[k];
+    else v=ha?A.f[k]:(hb?B.f[k]:undefined);
+    if(v!==undefined) f[k]=v;
+    const m=Math.max(ta,tb); if(m) t[k]=m;
+  });
+  return {f,t};
+}
+function canon(d){const o={f:{},t:{}};Object.keys(d.f).sort().forEach(k=>o.f[k]=d.f[k]);Object.keys(d.t).sort().forEach(k=>o.t[k]=d.t[k]);return J(o);}
+
+let PREV=flatten(S);
+// 和上一次保存时比，给改动过、删掉的条目记上时间
+function stamp(){
+  const cur=flatten(S),now=Date.now();S._t=S._t||{};
+  Object.keys(cur).forEach(k=>{if(PREV[k]!==cur[k])S._t[k]=now;});
+  Object.keys(PREV).forEach(k=>{if(!(k in cur))S._t[k]=now;});
+  PREV=cur;
+}
+function localDoc(){stamp();return {f:PREV,t:Object.assign({},S._t||{})};}
+function applyDoc(d){
+  const keep={run:S.run};
+  S=Object.assign(unflatten(d.f),keep,{_t:d.t});
+  PREV=flatten(S);
+  try{localStorage.setItem(LS,J(S));}catch(e){}
+}
+
+const SY={user:null,auth:null,mods:null,busy:false,again:false,last:0,err:'',timer:null,ready:false};
+function syncWanted(){try{return !!localStorage.getItem(SYNC_LS);}catch(e){return false;}}
+async function fbLoad(){
+  if(SY.mods) return SY.mods;
+  const [app,auth]=await Promise.all([import(FB_SDK+'firebase-app.js'),import(FB_SDK+'firebase-auth.js')]);
+  const a=app.initializeApp(FB);
+  SY.auth=auth.getAuth(a);
+  SY.mods={app,auth};
+  return SY.mods;
+}
+function docURL(){return 'https://firestore.googleapis.com/v1/projects/'+FB.projectId+'/databases/(default)/documents/users/'+SY.user.uid;}
+async function api(method,url,body){
+  const tok=await SY.user.getIdToken();
+  const r=await fetch(url,{method,headers:{Authorization:'Bearer '+tok,'Content-Type':'application/json'},body:body?J(body):undefined});
+  const d=await r.json().catch(()=>({}));
+  return {ok:r.ok,status:r.status,d};
+}
+async function syncNow(){
+  if(!SY.user) return;
+  if(SY.busy){SY.again=true;return;}
+  SY.busy=true;SY.err='';SY.last=0;drawSync();
+  try{
+    for(let tries=0;tries<3;tries++){
+      const g=await api('GET',docURL());
+      let remote=null,ut=null;
+      if(g.ok){remote=JSON.parse(g.d.fields.data.stringValue);ut=g.d.updateTime;}
+      else if(g.status!==404) throw new Error(g.status===403?'没有权限读取云端数据':'云端读取失败（'+g.status+'）');
+      const loc=localDoc(), merged=remote?mergeDocs(loc,remote):loc;
+      const before=canon(loc), m=canon(merged);
+      if(m!==before){applyDoc(merged);onSynced();}
+      if(remote&&canon(remote)===m){SY.last=Date.now();break;}
+      const pre=ut?'currentDocument.updateTime='+encodeURIComponent(ut):'currentDocument.exists=false';
+      const p=await api('PATCH',docURL()+'?'+pre,{fields:{data:{stringValue:m},at:{integerValue:String(Date.now())}}});
+      if(p.ok){SY.last=Date.now();break;}
+      if(p.status===400||p.status===409||p.status===412) continue;   // 另一台设备刚好也在写，重新读一次再合
+      throw new Error('云端保存失败（'+p.status+'）');
+    }
+    if(!SY.last||Date.now()-SY.last>5000) throw new Error('同步冲突，稍后会自动重试');
+  }catch(e){SY.err=navigator.onLine===false?'现在离线，联网后会自动同步':(e.message||'同步失败');}
+  SY.busy=false;drawSync();
+  if(SY.again){SY.again=false;syncNow();}
+}
+function onSynced(){
+  // 详情页开着时不打断（可能正在写笔记），只刷新背后的页面
+  render();
+}
+function syncSoon(){if(!SY.user)return;clearTimeout(SY.timer);SY.timer=setTimeout(syncNow,3000);}
+
+async function syncInit(){
+  try{
+    const {auth}=await fbLoad();
+    auth.onAuthStateChanged(SY.auth,u=>{
+      SY.user=u;SY.ready=true;
+      try{u?localStorage.setItem(SYNC_LS,u.uid):localStorage.removeItem(SYNC_LS);}catch(e){}
+      drawSync(); if(u) syncNow();
+    });
+  }catch(e){SY.ready=true;SY.err='连不上谷歌服务，进度先存在本机';drawSync();}
+}
+async function syncLogin(){
+  SY.err='';drawSync();
+  try{
+    const {auth}=await fbLoad();
+    if(!SY.ready) syncInit();
+    const r=await auth.signInWithPopup(SY.auth,new auth.GoogleAuthProvider());
+    SY.user=r.user;try{localStorage.setItem(SYNC_LS,r.user.uid);}catch(e){}
+    await syncNow();
+    if(!SY.err) modal('同步已开启','以后在另一台设备的 Chrome 里打开这个网站，用同一个 Google 账号登录，进度就会自动合并。<br><br>两边的学习记录、问题和打卡日都会保留，不会互相覆盖。',[{t:'好',c:'pri'}]);
+  }catch(e){
+    const c=e&&e.code||'';
+    SY.err=c==='auth/popup-closed-by-user'||c==='auth/cancelled-popup-request'?'':
+      c==='auth/popup-blocked'?'登录窗口被浏览器拦截了，请允许弹出窗口后再试':
+      c==='auth/unauthorized-domain'?'这个网址还没加入登录白名单':
+      c==='auth/network-request-failed'||!SY.mods?'连不上谷歌服务，请确认网络能访问 Google':
+      '登录没有成功，请稍后再试';
+    drawSync();
+  }
+}
+async function syncLogout(){try{await fbLoad();await SY.mods.auth.signOut(SY.auth);}catch(e){}SY.user=null;try{localStorage.removeItem(SYNC_LS);}catch(e){}drawSync();}
+async function syncWipe(){
+  try{const r=await api('DELETE',docURL());if(!r.ok&&r.status!==404)throw 0;
+    await syncLogout();modal('已删除','云端的进度已经删掉了，这台设备上的进度还在。',[{t:'好',c:'pri'}]);}
+  catch(e){modal('没有删掉','网络好像不通，稍后再试。',[{t:'好',c:'pri'}]);}
+}
+function hm(t){const d=new Date(t);return pad(d.getHours())+':'+pad(d.getMinutes());}
+function syncHTML(){
+  if(SY.user){
+    const st=SY.busy?'正在同步…':SY.err?SY.err:SY.last?'已同步 · '+hm(SY.last):'等待同步';
+    return '<div class="sy-row"><span class="sy-dot'+(SY.err?' bad':SY.busy?' busy':'')+'"></span><div class="sy-t"><b>'+esc(SY.user.email||'已登录')+'</b><span>'+esc(st)+'</span></div></div>'+
+      '<div class="btnrow" style="margin-top:14px"><button class="btn sm pri" id="syNow">'+I('reset','sm')+'立即同步</button><button class="btn sm" id="syOut">退出登录</button></div>'+
+      '<button class="sy-del" id="syDel">删除云端数据</button>';
+  }
+  if(syncWanted()&&!SY.ready) return '<p class="muted" style="margin:0">正在连接…</p>';
+  return '<p class="muted" style="margin:0 0 12px">用 Google 账号登录后，电脑和手机上的 Chrome 会自动同步进度。需要网络能访问 Google；不登录也能照常用，进度存在本机。</p>'+
+    (SY.err?'<p class="sy-err">'+esc(SY.err)+'</p>':'')+
+    '<button class="btn sm full pri" id="syIn">用 Google 登录同步</button>';
+}
+function drawSync(){
+  const b=$('syncBox'); if(!b) return;
+  b.innerHTML=syncHTML();
+  const on=(id,f)=>{const e=$(id);if(e)e.onclick=f;};
+  on('syIn',syncLogin); on('syNow',syncNow); on('syOut',syncLogout);
+  on('syDel',()=>modal('删除云端数据','会删掉保存在 Google 云端的进度，并退出登录。<b>这台设备上的进度不受影响</b>。',[{t:'取消',c:'pri'},{t:'确认删除',c:'danger',f:syncWipe}]));
+}
+document.addEventListener('visibilitychange',()=>{if(SY.user)syncNow();});
+setInterval(()=>{if(SY.user&&document.visibilityState==='visible')syncNow();},90000);
+window.addEventListener('online',()=>{if(SY.user)syncNow();});
+
 
 const stOf=n=>Math.min(S.st[n]||0,2);   // 0 未开始 · 1 看过未过关 · 2 已过关（旧数据里的「能讲」按过关算）
 const P=n=>PARTS.find(p=>p.n===n);
@@ -626,7 +810,7 @@ function vMe(){
   const B=[['rocket','起步',d>=1],['search','搜索通关',m1],['brain','RAG 通关',m2],['bot','Agent 通关',m3],
            ['layers','底座打牢',m4],['film','首条解锁',v1],['mtn','过半',half],['pen','提问 ×10',asked],['flame','连续 7 天',best>=7],['cal','连续 21 天',best>=21],['clock','累计 20 小时',tot>=20*3600],['crown','全通关',all]];
   const got=B.filter(b=>b[2]).length;
-  let h=phead('我的手账','战绩与备份','进度只存在这台设备的浏览器里。换设备前，记得复制进度码。');
+  let h=phead('我的手账','战绩与备份',SY.user?'已开启云同步，电脑和手机的进度会自动合并。':'进度存在这台设备的浏览器里。登录 Google 可以在电脑和手机之间同步。');
 
   h+='<div class="sect">学习日历</div><div class="card cal" id="calBox">'+calHTML()+'</div>';
 
@@ -638,6 +822,8 @@ function vMe(){
 
   h+='<div class="sect">徽章 <span class="k">'+got+'/'+B.length+'</span></div><div class="badges">'+
     B.map(b=>'<div class="badge'+(b[2]?' got':'')+'"><div class="bm">'+I(b[0])+'</div><div class="bn">'+b[1]+'</div></div>').join('')+'</div>';
+
+  h+='<div class="sect">云同步</div><div class="card" id="syncBox">'+syncHTML()+'</div>';
 
   h+='<div class="sect">进度码</div><div class="card">'+
      '<p class="muted" style="margin:0 0 12px">换手机、清了浏览器数据、想在电脑上接着看，都靠它。复制下来存到备忘录里。</p>'+
@@ -1175,7 +1361,7 @@ function render(){
   v.innerHTML={home:vHome,map:vMap,vids:vVids,me:vMe}[VIEW]();
   v.style.animation='none'; void v.offsetWidth; v.style.animation='';
   v.querySelectorAll('[data-p]').forEach(el=>{el.onclick=()=>openPart(+el.dataset.p);});
-  bindCal();
+  bindCal(); drawSync();
   const tx=$('tipX'); if(tx) tx.onclick=()=>{S.tipOff=1;save();render();};
   const q=$('quizBtn'); if(q) q.onclick=randomQuiz;
   const cp=$('cpBtn'); if(cp) cp.onclick=()=>{
@@ -1191,7 +1377,7 @@ function render(){
       save();render();modal('恢复成功','进度已经回来了。',[{t:'好',c:'pri'}]);
     }catch(e){modal('进度码无效','没认出来。确认复制完整了：它很长，别漏掉尾巴。',[{t:'好',c:'pri'}]);}
   };
-  const rs=$('rsBtn'); if(rs) rs.onclick=()=>modal('确认重置','所有进度、笔记、徽章都会清空，<b>不可撤销</b>。建议先复制一份进度码。',
+  const rs=$('rsBtn'); if(rs) rs.onclick=()=>modal('确认重置','所有进度、笔记、徽章都会清空，<b>不可撤销</b>；开了云同步的话，其他设备也会一起清空。建议先复制一份进度码。',
     [{t:'取消',c:'pri'},{t:'确认全部清空',c:'danger',f:()=>{S={st:{},notes:{},started:{},days:[],vidDone:{},ext:{},doneAt:{},qs:{},qa:{},ss:{},run:null};save();render();}}]);
 }
 document.querySelectorAll('.tabbar button').forEach(b=>{
@@ -1202,6 +1388,7 @@ $('modal').onclick=e=>{if(e.target===$('modal'))closeModal();};
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){if($('modal').classList.contains('on'))closeModal();else if($('shareView').classList.contains('on'))$('shareView').classList.remove('on');else if(CUR!==null)closePart();}});
 window.addEventListener('popstate',()=>{if(CUR!==null)closePart();});
 render();
+if(syncWanted()) syncInit();
 </script>
 </body>
 </html>
